@@ -1,0 +1,216 @@
+---
+title: "NUM global run"
+subtitle: "Julia/GPU port of NUMmodel (upstream Develop), MITgcm transport matrices"
+format:
+  html:
+    embed-resources: true
+    fig-width: 9
+    fig-height: 5.2
+    fig-dpi: 150
+execute:
+  echo: false
+  warning: false
+  message: false
+params:
+  run: "develop_closed_100yr"
+  grid: "MITgcm_2.8deg"
+  label: "2.8° MITgcm, closed POM bottom, Euler step 0.1 d"
+---
+
+```{r setup}
+# Figures for one spin-up run (scripts/spinup_global.jl output). The data are reduced to CSV by
+# notebooks/export_figure_data.py, which is run here if its output is missing.
+# Render another run with, e.g.:
+#   quarto render notebooks/run_figures.qmd -P run:develop_100yr -P label:"2.8° MITgcm, open POM bottom" \
+#     --output develop_100yr_figures.html
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(sf)
+library(jsonlite)
+library(patchwork)
+library(stringr)
+
+root <- normalizePath(file.path(dirname(knitr::current_input(dir = TRUE)), ".."))
+datadir <- file.path(root, "reference", "figdata", params$run)
+if (!file.exists(file.path(datadir, "meta.json"))) {
+  system2("python3", c(file.path(root, "notebooks", "export_figure_data.py"),
+                       file.path(root, "reference", paste0(params$run, ".mat")), params$grid, datadir))
+}
+meta  <- fromJSON(file.path(datadir, "meta.json"))
+cells <- read.csv(file.path(datadir, "cells.csv"))
+ts    <- read.csv(file.path(datadir, "timeseries.csv"))
+spec  <- read.csv(file.path(datadir, "spectrum.csv"))
+
+theme_set(theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(colour = "grey30", size = 10.5),
+        plot.title.position = "plot",
+        panel.grid.minor = element_blank()))
+
+# --- map projection: Mollweide with the seam on a cell edge near 20°E (through Africa/Europe) ---
+dx  <- meta$dx
+cut <- round(20 / dx) * dx
+lon0 <- cut + 180
+moll <- sprintf("+proj=moll +lon_0=%.6f +datum=WGS84 +units=m +no_defs", lon0)
+wrap <- function(l) ((l - cut) %% 360) + cut          # longitudes into [cut, cut + 360)
+
+cell_polys <- function(d) {
+  eps <- 1e-6
+  w <- wrap(d$lon_w + eps) - eps; e <- w + (d$lon_e - d$lon_w)
+  w <- pmax(w, cut + eps); e <- pmin(e, cut + 360 - eps)
+  geoms <- lapply(seq_len(nrow(d)), function(i)
+    st_polygon(list(matrix(c(w[i], d$lat_s[i], e[i], d$lat_s[i], e[i], d$lat_n[i],
+                             w[i], d$lat_n[i], w[i], d$lat_s[i]), ncol = 2, byrow = TRUE))))
+  st_transform(st_sf(d, geometry = st_sfc(geoms, crs = 4326)), moll)
+}
+ocean <- cell_polys(filter(cells, ocean == 1))
+land  <- cell_polys(filter(cells, ocean == 0)) |> st_union()
+# outline of the map: the two seam meridians, densely sampled so they curve in the projection
+lats <- seq(-90, 90, length.out = 400)
+globe <- st_polygon(list(rbind(cbind(cut + 1e-6, lats), cbind(cut + 360 - 1e-6, rev(lats)),
+                               c(cut + 1e-6, -90)))) |>
+  st_sfc(crs = 4326) |> st_transform(moll)
+
+map_base <- function() {
+  list(geom_sf(data = globe, fill = "grey97", colour = "grey60", linewidth = 0.3),
+       geom_sf(data = land, fill = "grey75", colour = NA),
+       theme_void(base_size = 12),
+       theme(plot.title = element_text(face = "bold", size = 14),
+             plot.subtitle = element_text(colour = "grey30", size = 10.5),
+             plot.title.position = "plot",
+             legend.position = "bottom", legend.key.width = unit(2.2, "cm"), legend.key.height = unit(0.35, "cm"),
+             legend.title = element_text(size = 10), plot.margin = margin(6, 6, 6, 6)))
+}
+nice_group <- c(generalist = "Generalists", diatom = "Diatoms", copepod_passive = "Passive copepods",
+                copepod_active = "Active copepods", pom = "Particulate organic matter")
+Y <- meta$years
+```
+
+**Run:** `r params$run` — `r params$label`. `r format(meta$boxes, big.mark = ",")` ocean boxes,
+`r Y` model years. Wall clock on the GPU: `r round(meta$setup_s)` s setup, then
+`r sprintf("%.1f", median(ts$wall_s[-1]))` s per model year (median; the first year includes compilation).
+
+## Global time series
+
+```{r npp-ts}
+p1 <- ts$npp_pgc[1]; pY <- ts$npp_pgc[Y]
+ggplot(ts, aes(year, npp_pgc)) +
+  geom_line(colour = "#1f4e79", linewidth = 0.9) +
+  labs(title = sprintf("Global NPP shows a slight decline over time",
+                       ifelse(pY < p1, "falls", "rises"), p1, pY, Y),
+       subtitle = str_wrap("Net primary production summed over the ocean and over each model year.\n I believe there is a redistribution in nitrate from surface to deep"),
+       x = "Model year", y = "PgC per year")
+```
+
+```{r n-ts}
+ts <- mutate(ts, n_change = 100 * (n_total_pgn / n_total_pgn[1] - 1))
+ggplot(ts, aes(year, n_change)) +
+  geom_hline(yintercept = 0, colour = "grey70") +
+  geom_line(colour = "#1f4e79", linewidth = 0.9) +
+  labs(title = sprintf("Total nitrogen changes by only %.2f%% in %d years", ts$n_change[Y], Y),
+       subtitle = "Dissolved nitrogen plus nitrogen in biomass and detritus, relative to the end of year 1.\nNPP changes much more than this, so its drift is redistribution of nutrients with depth, not loss.",
+       x = "Model year", y = "Change from year 1 (%)")
+```
+
+```{r biomass-ts, fig.height = 5.6}
+bio <- ts |> select(year, starts_with("b_")) |>
+  pivot_longer(-year, names_to = "group", values_to = "pgc") |>
+  mutate(group = nice_group[sub("^b_", "", group)])
+last <- filter(bio, year == Y)
+first <- filter(bio, year == 1)
+ratio <- setNames(last$pgc / first$pgc[match(last$group, first$group)], last$group)
+fall <- names(which.min(ratio))
+ggplot(bio, aes(year, pgc, colour = group)) +
+  geom_line(linewidth = 0.9) +
+  geom_text(data = last, aes(label = group), hjust = 0, nudge_x = 1.5, size = 3.6) +
+  scale_y_log10() +
+  scale_colour_viridis_d(option = "D", end = 0.85, guide = "none") +
+  scale_x_continuous(expand = expansion(mult = c(0.02, 0.32))) +
+  labs(title = sprintf("%s change the most: %.0f%% of their year-1 biomass remains after %d years",
+                       fall, 100 * ratio[fall], Y),
+       subtitle = "Total biomass of each group at the end of each model year (log scale).",
+       x = "Model year", y = "PgC")
+```
+
+## Production
+
+```{r npp-map, fig.height = 5.8}
+ocean <- ocean |> mutate(w = cos(lat * pi / 180) * (lat_n - lat_s))   # cell area weight (regular grid)
+o <- ocean |> st_drop_geometry() |> filter(!is.na(npp_final)) |> arrange(desc(npp_final)) |>
+  mutate(cum_area = cumsum(w) / sum(w), cum_npp = cumsum(npp_final * w) / sum(npp_final * w))
+top20 <- 100 * approx(o$cum_area, o$cum_npp, xout = 0.2)$y
+ggplot() + map_base() +
+  geom_sf(data = ocean, aes(fill = npp_final), colour = NA) +
+  scale_fill_viridis_c(option = "viridis", trans = "log10", limits = c(10, 1000), oob = scales::squish,
+                       name = "NPP, g C per m² per year (log scale)", na.value = "grey75") +
+  labs(title = sprintf("Annually Averaged NPP", top20),
+       subtitle = sprintf("Depth-integrated net primary production in model year %d. ", Y))
+```
+
+```{r npp-change-map, fig.height = 5.8}
+ocean <- ocean |> mutate(dnpp = npp_final - npp_ref)
+d <- st_drop_geometry(ocean) |> filter(!is.na(dnpp))
+fdown <- 100 * sum(d$w[d$dnpp < 0]) / sum(d$w)
+lim <- 200
+ggplot() + map_base() +
+  geom_sf(data = ocean, aes(fill = dnpp), colour = NA) +
+  scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b", midpoint = 0,
+                       limits = c(-lim, lim), oob = scales::squish,
+                       name = "Change in NPP, g C per m² per year", na.value = "grey75") +
+  labs(title = sprintf("Production falls over %.0f%% of the ocean between year %d and year %d", fdown, meta$yref, Y),
+       subtitle = sprintf("Depth-integrated NPP in year %d minus year %d. Blue is a decrease, red an increase;\nvalues beyond ±%d are shown at the end of the scale.", Y, meta$yref, lim))
+```
+
+## Size structure
+
+```{r fractions-map, fig.height = 4.6, fig.width = 13}
+dom <- st_drop_geometry(ocean) |> filter(!is.na(f_pico)) |>
+  mutate(top = c("pico", "nano", "micro")[max.col(cbind(f_pico, f_nano, f_micro))])
+share <- tapply(dom$w, dom$top, sum) / sum(dom$w) * 100
+lead <- names(which.max(share))
+# one perceptually uniform map per size class
+frac_map <- function(var, label, option) {
+  ggplot() + map_base() +
+    geom_sf(data = ocean, aes(fill = .data[[var]]), colour = NA) +
+    scale_fill_viridis_c(option = option, limits = c(0, 1), name = "Fraction of biomass",
+                         breaks = c(0, 0.5, 1), na.value = "grey75") +
+    labs(subtitle = label) +
+    theme(plot.subtitle = element_text(size = 12, colour = "grey15"),
+          legend.key.width = unit(1.4, "cm"))
+}
+(frac_map("f_pico", "Pico (under 2 µm)", "mako") |
+   frac_map("f_nano", "Nano (2 to 20 µm)", "rocket") |
+   frac_map("f_micro", "Micro (over 20 µm)", "plasma")) +
+  plot_annotation(
+    title = sprintf("Is this the size distribution we should expect",
+                    tools::toTitleCase(lead), share[lead]),
+    subtitle = sprintf("Share of generalist and diatom biomass in each size class, 0 to 120 m, mean of model year %d.", Y),
+    theme = theme(plot.title = element_text(face = "bold", size = 14),
+                  plot.subtitle = element_text(colour = "grey30", size = 10.5)))
+```
+
+```{r lambda-map, fig.height = 5.8}
+dl <- st_drop_geometry(ocean) |> filter(!is.na(lambda))
+hi <- weighted.mean(dl$lambda[abs(dl$lat) > 45], dl$w[abs(dl$lat) > 45])
+lo <- weighted.mean(dl$lambda[abs(dl$lat) < 30], dl$w[abs(dl$lat) < 30])
+q <- quantile(dl$lambda, c(0.02, 0.98))
+ggplot() + map_base() +
+  geom_sf(data = ocean, aes(fill = lambda), colour = NA) +
+  scale_fill_viridis_c(option = "cividis", limits = q, oob = scales::squish,
+                       name = "Slope of the size spectrum (log-log)", na.value = "grey75") +
+  labs(title = sprintf("Size spectra are %s at high latitudes than in the tropics and subtropics",
+                       ifelse(hi > lo, "flatter", "steeper")),
+       subtitle = sprintf("Slope of the community biomass spectrum, 0 to 120 m, year %d. Mean slope poleward of 45°: %.2f;\nequatorward of 30°: %.2f. A slope of -1 is the Sheldon spectrum; flatter means relatively more biomass in large organisms.", Y, hi, lo))
+```
+
+```{r spectrum, fig.height = 5.4}
+slope <- meta$lambda_global
+rel <- if (abs(slope + 1) < 0.1) "close to" else if (slope < -1) "steeper than" else "flatter than"
+ggplot(filter(spec, community > 1e-14 * max(community)), aes(mass_ugc, community)) +
+  geom_line(colour = "grey15", linewidth = 1.1) +
+  scale_x_log10(labels = scales::label_log()) + scale_y_log10(labels = scales::label_log()) +
+  labs(title = sprintf("The global size spectrum has a slope of %.2f, %s the Sheldon spectrum", slope, rel),
+       subtitle = sprintf("Biomass per unit body mass of the whole plankton community, upper 120 m, area-weighted global mean,\nyear %d. Equal biomass in each logarithmic size class (Sheldon et al. 1972) gives a slope of -1 on these axes.", Y),
+       x = "Body mass (µg C)", y = "Biomass per unit body mass")
+```

@@ -1,0 +1,9 @@
+files.zip
+__pycache__/
+*.asv
+reference/**/*.mat
+reference/**/*.so
+num_tm_2p8.tar
+CLAUDE.md
+.claude/
+notebooks/.ipynb_checkpoints/

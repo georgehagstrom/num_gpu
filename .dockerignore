@@ -1,0 +1,13 @@
+# Whitelist: only what the image needs (the data stays outside the image).
+*
+!julia/NUMGPU/Project.toml
+!julia/NUMGPU/Manifest.toml
+!julia/NUMGPU/src
+!julia/NUMGPU/ext
+!julia/NUMGPU/test/oracle_states.jl
+!julia/gpu/Project.toml
+!julia/gpu/Manifest.toml
+!julia/gpu/LocalPreferences.toml
+!scripts/*.jl
+!NUMmodel/input
+!docker/entry_help.sh

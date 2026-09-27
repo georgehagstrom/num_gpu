@@ -1,0 +1,26 @@
+name = "NUMGPU"
+uuid = "5b1a2f0e-3c7d-4e8a-9f61-2d4b7c9e0a11"
+version = "0.1.0"
+
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MAT = "23992714-dd62-5051-b70f-ba57cb901cac"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
+[extensions]
+NUMGPUCUDAExt = "CUDA"
+
+[compat]
+julia = "1.11"
+Adapt = "4.7.1"
+KernelAbstractions = "0.9.42"
+MAT = "0.12.1"
+SparseArrays = "1.11.0"
+StaticArrays = "1.9.22"

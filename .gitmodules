@@ -1,0 +1,4 @@
+[submodule "NUMmodel"]
+	path = NUMmodel
+	url = https://github.com/Kenhasteandersen/NUMmodel.git
+	ignore = untracked
